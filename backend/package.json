@@ -1,0 +1,38 @@
+{
+  "name": "leadgen-backend",
+  "version": "1.0.0",
+  "description": "AI B2B Lead Generation & Market Intelligence Platform — Backend",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "leadgen",
+    "b2b",
+    "ai",
+    "langchain"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@langchain/community": "^0.3.0",
+    "@langchain/core": "^0.3.0",
+    "@langchain/google-genai": "^0.1.0",
+    "apify-client": "^2.22.2",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.3",
+    "langchain": "^0.3.0",
+    "mongoose": "^8.8.0",
+    "multer": "^2.0.2",
+    "nodemailer": "^8.0.1",
+    "openai": "^6.25.0",
+    "pdf-parse": "^2.4.5",
+    "twilio": "^5.12.2",
+    "uuid": "^10.0.0",
+    "zod": "^4.3.6"
+  }
+}

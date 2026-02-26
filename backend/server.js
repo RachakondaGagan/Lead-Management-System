@@ -1,0 +1,78 @@
+// ──────────────────────────────────────────────────────────────
+// server.js — Express application entry point
+// ──────────────────────────────────────────────────────────────
+//
+// Loads environment variables, connects to MongoDB Atlas,
+// mounts API routes, and starts the HTTP server.
+//
+// Note: Due to ES Module top-level hoisting, we must load routes 
+// dynamically after dotenv.config() to ensure API Keys exist.
+// ──────────────────────────────────────────────────────────────
+
+import dotenv from "dotenv";
+dotenv.config(); // Ensure this is definitely evaluated first
+
+import express from "express";
+import cors from "cors";
+import connectDB from "./config/db.js";
+import errorHandler from "./middleware/errorHandler.js";
+
+const app = express();
+
+// ── Global Middleware ────────────────────────────────────────
+app.use(cors());                           // Allow cross-origin (React frontend)
+app.use(express.json());                   // Parse JSON request bodies
+
+// ── Health Check ─────────────────────────────────────────────
+app.get("/api/health", (_req, res) => {
+    res.json({
+        success: true,
+        status: "ok",
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || "development",
+    });
+});
+
+// ── Start Server ─────────────────────────────────────────────
+const PORT = process.env.PORT || 5001;
+
+const startServer = async () => {
+    try {
+        await connectDB();                       // Connect to MongoDB first
+
+        // Dynamically import routes *after* dotenv and DB success to avoid ESM hoisting issues
+        const chatRoutes = (await import("./routes/chatRoutes.js")).default;
+        const researchRoutes = (await import("./routes/researchRoutes.js")).default;
+        const campaignRoutes = (await import("./routes/campaignRoutes.js")).default;
+        const outreachRoutes = (await import("./routes/outreachRoutes.js")).default;
+        const uploadRoutes = (await import("./routes/uploadRoutes.js")).default;
+        const authRoutes = (await import("./routes/authRoutes.js")).default;
+        const { protect } = await import("./middleware/authMiddleware.js");
+
+        // ── API Routes ───────────────────────────────────────────────
+        app.use("/api/auth", authRoutes);              // Authentication endpoints
+        app.use("/api/chat", protect, chatRoutes);     // Phase 1: Intake chatbot (Protected)
+        app.use("/api/research", protect, researchRoutes); // Phase 1: Deep research agent (Protected)
+        app.use("/api/campaign", protect, campaignRoutes); // Phase 2: Scraping + image gen (Protected)
+        app.use("/api/outreach", protect, outreachRoutes); // Phase 3: Email + WhatsApp (Protected)
+        app.use("/api/upload", protect, uploadRoutes);     // File uploads (Protected)
+
+        // ── Error Handler (must be last) ─────────────────────────────
+        app.use(errorHandler);
+
+        app.listen(PORT, () => {
+            console.log(`\n🚀 Server running on http://localhost:${PORT}`);
+            console.log(`📡 Health check: http://localhost:${PORT}/api/health`);
+            console.log(`💬 Chat endpoint: POST http://localhost:${PORT}/api/chat/intake`);
+            console.log(`🔬 Research endpoint: POST http://localhost:${PORT}/api/research/analyze`);
+            console.log(`⚡ Campaign endpoint: POST http://localhost:${PORT}/api/campaign/execute`);
+            console.log(`📧 Outreach email: POST http://localhost:${PORT}/api/outreach/email`);
+            console.log(`📱 Outreach WhatsApp: POST http://localhost:${PORT}/api/outreach/whatsapp\n`);
+        });
+    } catch (error) {
+        console.error("❌ Critical server start failure:", error);
+        process.exit(1);
+    }
+};
+
+startServer();
