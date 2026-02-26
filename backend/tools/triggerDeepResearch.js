@@ -7,16 +7,16 @@
 //
 //   Intake Chatbot → trigger_deep_research → executeDeepResearch()
 //
-// The tool:
-//   1. Receives the business summary + search angles from the LLM
-//   2. Kicks off the Deep Research Agent asynchronously
-//   3. Returns a confirmation so the Intake Agent can inform the user
+// IMPORTANT: This tool does NOT fire executeDeepResearch() itself.
+// The actual execution is handled by chatService.js which has
+// access to the userId for MongoDB persistence. This tool only
+// validates/captures the business context and returns a success
+// signal so the intake agent can inform the user.
 //
 // ──────────────────────────────────────────────────────────────
 
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { executeDeepResearch } from "../services/researchService.js";
 
 // ── Zod schema for the tool's input ──────────────────────────
 const triggerDeepResearchSchema = z.object({
@@ -48,23 +48,12 @@ const triggerDeepResearch = tool(
         console.log(suggested_search_angles.substring(0, 200) + "...");
         console.log("\n" + "═".repeat(60));
 
-        // ── Fire the research agent asynchronously ────────────────
-        // We use a fire-and-forget pattern so the intake agent can
-        // respond to the user immediately. The research runs in the
-        // background and persists results to MongoDB when done.
-        //
-        // NOTE: We don't await here intentionally — the research
-        // takes 30-90s and we want the user to get an immediate response.
-        // Errors are caught and logged rather than crashing the intake flow.
-
-        executeDeepResearch(comprehensive_business_summary, suggested_search_angles)
-            .then((report) => {
-                console.log("\n✅ Background research completed successfully.");
-                console.log(`📊 Found ${report.competitors_analyzed?.length || 0} competitors.`);
-            })
-            .catch((error) => {
-                console.error("\n❌ Background research failed:", error.message);
-            });
+        // ── Do NOT fire executeDeepResearch here ─────────────────
+        // chatService.js handles the actual execution with the userId
+        // context. This tool only captures and validates the structured
+        // input from the LLM. The tool's return value signals success
+        // to the agent, and chatService.js reads the toolInput from
+        // intermediateSteps to trigger the real pipeline.
 
         return (
             "SUCCESS: The deep research pipeline has been triggered and is running " +

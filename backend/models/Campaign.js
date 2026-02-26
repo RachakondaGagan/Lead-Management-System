@@ -3,8 +3,8 @@
 // ──────────────────────────────────────────────────────────────
 //
 // A Campaign is created after Phase 1 research completes.
-// It stores the scraper configuration, generated ad assets,
-// and tracks execution status through Phase 2 → Phase 3.
+// It stores the scraper configuration and tracks execution
+// status through the scraping → scoring → ready pipeline.
 // ──────────────────────────────────────────────────────────────
 
 import mongoose from "mongoose";
@@ -31,18 +31,6 @@ const campaignSchema = new mongoose.Schema(
             target_job_titles: [String],
         },
 
-        // Ad creative concept from research
-        adCreativeConcept: {
-            visual_prompt: { type: String, default: null },
-            ad_copy: { type: String, default: null },
-        },
-
-        // Generated ad image URL (populated after DALL-E call)
-        adImageUrl: {
-            type: String,
-            default: null,
-        },
-
         // Count of leads scraped for quick reference
         leadCount: {
             type: Number,
@@ -55,11 +43,12 @@ const campaignSchema = new mongoose.Schema(
             enum: [
                 "pending",            // Created, not yet executed
                 "scraping",           // Apify actors running
-                "generating_image",   // DALL-E 3 call in progress
-                "ready",              // Execution complete, leads + image ready
+                "scoring",            // AI lead scoring in progress
+                "ready",              // Execution complete, leads ready
                 "outreach_active",    // Outreach emails/WhatsApp being sent
                 "completed",          // All outreach finished
-                "error",              // Something failed
+                "error",              // Generic error
+                "failed_scraping",    // Apify scraping specifically failed
             ],
             default: "pending",
         },

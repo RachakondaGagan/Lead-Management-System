@@ -23,6 +23,29 @@ const app = express();
 app.use(cors());                           // Allow cross-origin (React frontend)
 app.use(express.json());                   // Parse JSON request bodies
 
+// ── Request Timeout (30s for standard routes) ───────────────
+// Prevents stuck connections when external APIs (Tavily, Apify, OpenAI) hang.
+// Long-running endpoints (research, chat) are excluded since they involve
+// multi-step LLM calls that can take 30-90s.
+app.use((req, res, next) => {
+    // Skip timeout for known long-running endpoints
+    const longRunningPaths = ["/api/research", "/api/chat"];
+    const isLongRunning = longRunningPaths.some(p => req.path.startsWith(p));
+
+    if (!isLongRunning) {
+        const timeout = 30_000; // 30 seconds
+        req.setTimeout(timeout, () => {
+            if (!res.headersSent) {
+                res.status(408).json({
+                    success: false,
+                    message: `Request timeout — operation exceeded ${timeout / 1000}s limit.`,
+                });
+            }
+        });
+    }
+    next();
+});
+
 // ── Health Check ─────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
     res.json({
@@ -47,15 +70,17 @@ const startServer = async () => {
         const outreachRoutes = (await import("./routes/outreachRoutes.js")).default;
         const uploadRoutes = (await import("./routes/uploadRoutes.js")).default;
         const authRoutes = (await import("./routes/authRoutes.js")).default;
+        const templateRoutes = (await import("./routes/templateRoutes.js")).default;
         const { protect } = await import("./middleware/authMiddleware.js");
 
         // ── API Routes ───────────────────────────────────────────────
         app.use("/api/auth", authRoutes);              // Authentication endpoints
-        app.use("/api/chat", protect, chatRoutes);     // Phase 1: Intake chatbot (Protected)
-        app.use("/api/research", protect, researchRoutes); // Phase 1: Deep research agent (Protected)
-        app.use("/api/campaign", protect, campaignRoutes); // Phase 2: Scraping + image gen (Protected)
+        app.use("/api/chat", chatRoutes);              // Phase 1: Intake chatbot (Public — scoped by userId)
+        app.use("/api/research", researchRoutes);      // Phase 1: Deep research agent (Public — scoped by userId)
+        app.use("/api/campaign", campaignRoutes);      // Phase 2: Scraping + leads (Public — scoped by userId)
         app.use("/api/outreach", protect, outreachRoutes); // Phase 3: Email + WhatsApp (Protected)
         app.use("/api/upload", protect, uploadRoutes);     // File uploads (Protected)
+        app.use("/api/template", templateRoutes);          // Email template editor (Protected via router)
 
         // ── Error Handler (must be last) ─────────────────────────────
         app.use(errorHandler);
@@ -67,7 +92,8 @@ const startServer = async () => {
             console.log(`🔬 Research endpoint: POST http://localhost:${PORT}/api/research/analyze`);
             console.log(`⚡ Campaign endpoint: POST http://localhost:${PORT}/api/campaign/execute`);
             console.log(`📧 Outreach email: POST http://localhost:${PORT}/api/outreach/email`);
-            console.log(`📱 Outreach WhatsApp: POST http://localhost:${PORT}/api/outreach/whatsapp\n`);
+            console.log(`📱 Outreach WhatsApp: POST http://localhost:${PORT}/api/outreach/whatsapp`);
+            console.log(`📝 Template editor: GET/PUT http://localhost:${PORT}/api/template\n`);
         });
     } catch (error) {
         console.error("❌ Critical server start failure:", error);

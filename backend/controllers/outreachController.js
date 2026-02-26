@@ -7,7 +7,6 @@
 // ──────────────────────────────────────────────────────────────
 
 import Lead from "../models/Lead.js";
-import Campaign from "../models/Campaign.js";
 import { sendColdEmail } from "../services/emailService.js";
 import { sendWhatsAppMessage } from "../services/whatsappService.js";
 
@@ -54,13 +53,8 @@ export async function handleSendEmail(req, res, next) {
             });
         }
 
-        // ── Fetch parent campaign for ad copy context ───────────
-        const campaign = lead.campaignId
-            ? await Campaign.findById(lead.campaignId)
-            : null;
-
-        // ── Send the email ──────────────────────────────────────
-        const result = await sendColdEmail(lead, senderConfig, campaign);
+        // ── Send the email using the user's saved template ──────
+        const result = await sendColdEmail(lead, senderConfig, req.user._id);
 
         if (result.success) {
             // Update lead status in MongoDB

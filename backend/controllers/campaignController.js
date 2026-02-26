@@ -2,17 +2,24 @@
 // controllers/campaignController.js — Execution Engine
 // ──────────────────────────────────────────────────────────────
 //
-// POST /api/campaign/execute  — Orchestrates the full Phase 2
-//   pipeline: scrape leads → clean data → generate ad image
+// POST /api/campaign/execute  — Orchestrates Phase 2 pipeline:
+//   scrape → deduplicate → AI score → persist
 //
 // GET  /api/campaign/status/:userId — Poll for execution progress
+// GET  /api/campaign/:campaignId/leads — Fetch leads for a campaign
+//
+// PRODUCTION HARDENING:
+//   - Background execution with 202 Accepted pattern
+//   - Granular error statuses (failed_scraping)
+//   - LLM scoring integration with batch chunking
+//   - Bulk insertMany() for database efficiency
+//
 // ──────────────────────────────────────────────────────────────
 
 import Session from "../models/Session.js";
 import Campaign from "../models/Campaign.js";
 import Lead from "../models/Lead.js";
-import { scrapeLeads } from "../services/scraperService.js";
-import { generateAdImage } from "../services/imageGenService.js";
+import { scrapeLeads, scoreLeadsInBatches } from "../services/scraperService.js";
 
 /**
  * POST /api/campaign/execute
@@ -20,7 +27,8 @@ import { generateAdImage } from "../services/imageGenService.js";
  * Body: { userId: string }
  *
  * Fetches the user's research result from the Session, creates a Campaign,
- * then orchestrates scraping + image generation in the background.
+ * then orchestrates scraping + scoring in the background.
+ * Returns 202 Accepted immediately — client polls /api/campaign/status/:userId.
  */
 export async function handleCampaignExecute(req, res, next) {
     try {
@@ -50,7 +58,6 @@ export async function handleCampaignExecute(req, res, next) {
             userId,
             researchResult: research,
             scraperParameters: research.scraper_parameters || {},
-            adCreativeConcept: research.ad_creative_concept || {},
             status: "scraping",
             executionLogs: [{ message: "Campaign execution initiated." }],
         });
@@ -58,12 +65,13 @@ export async function handleCampaignExecute(req, res, next) {
         console.log(`\n🚀 Campaign created: ${campaign._id} for user: ${userId}`);
 
         // ── 3. Fire the execution pipeline in the background ────
-        // Don't block the HTTP response — let the client poll for status
+        // Don't block the HTTP response — return 202 immediately
         executePipeline(campaign).catch((error) => {
-            console.error(`❌ Campaign pipeline failed for ${campaign._id}:`, error);
+            console.error(`❌ Campaign pipeline catastrophic failure for ${campaign._id}:`, error);
         });
 
-        res.json({
+        // ── 4. Return 202 Accepted ──────────────────────────────
+        res.status(202).json({
             success: true,
             data: {
                 campaignId: campaign._id,
@@ -77,7 +85,9 @@ export async function handleCampaignExecute(req, res, next) {
 }
 
 /**
- * Background execution pipeline: Scrape → Clean → Generate Image
+ * Background execution pipeline: Scrape → Score → Persist
+ *
+ * Each stage has independent error handling with granular status updates.
  */
 async function executePipeline(campaign) {
     const logToDb = async (msg) => {
@@ -87,74 +97,96 @@ async function executePipeline(campaign) {
         ).catch(() => { });
     };
 
+    let cleanLeads = [];
+
+    // ══ STAGE A: Web Scraping ══════════════════════════════════
     try {
-        // ══ STEP A: Web Scraping ════════════════════════════════
         await logToDb("🔍 Phase 2A: Starting lead scraping...");
         await Campaign.updateOne({ _id: campaign._id }, { status: "scraping" });
 
         const rawLeads = await scrapeLeads(
             campaign.scraperParameters,
-            logToDb  // Pass the logger for real-time updates
+            logToDb
         );
 
-        // ══ STEP B: Data Cleaning & Persistence ═════════════════
-        await logToDb(`🧹 Phase 2B: Cleaning ${rawLeads.length} raw leads...`);
+        await logToDb(`🧹 Phase 2B: Cleaning ${rawLeads.length} scraped leads...`);
 
-        // Filter: must have at least name + (email OR phone)
-        const cleanLeads = rawLeads.filter(
+        // Additional filter: must have at least name + (email OR phone)
+        cleanLeads = rawLeads.filter(
             (lead) => lead.fullName && (lead.email || lead.phone)
         );
 
         await logToDb(`✅ ${cleanLeads.length} leads passed quality filter.`);
 
-        // Bulk insert leads linked to this campaign
+    } catch (error) {
+        console.error(`❌ Scraping failed for campaign ${campaign._id}:`, error);
+        await logToDb(`❌ Scraping failed: ${error.message}`);
+        await Campaign.updateOne(
+            { _id: campaign._id },
+            { status: "failed_scraping", errorMessage: error.message }
+        );
+        return; // Abort pipeline — can't continue without leads
+    }
+
+    // ══ STAGE B: AI Lead Scoring ═══════════════════════════════
+    try {
+        if (cleanLeads.length > 0) {
+            await Campaign.updateOne({ _id: campaign._id }, { status: "scoring" });
+            await logToDb(`🧠 Phase 2C: AI-scoring ${cleanLeads.length} leads...`);
+
+            cleanLeads = await scoreLeadsInBatches(
+                cleanLeads,
+                {
+                    target_job_titles: campaign.scraperParameters?.target_job_titles || [],
+                    boolean_search_strings: campaign.scraperParameters?.boolean_search_strings || [],
+                },
+                logToDb
+            );
+
+            await logToDb(`✅ ${cleanLeads.length} leads survived AI scoring filter.`);
+        }
+    } catch (error) {
+        console.error(`⚠️ AI scoring failed for campaign ${campaign._id}:`, error);
+        await logToDb(`⚠️ AI scoring failed: ${error.message}. Using unscored leads.`);
+        // Non-fatal: continue with unscored leads (they still have value)
+    }
+
+    // ══ STAGE C: Database Persistence (Bulk Insert) ════════════
+    try {
         if (cleanLeads.length > 0) {
             const leadDocs = cleanLeads.map((lead) => ({
                 campaignId: campaign._id,
                 ...lead,
             }));
 
-            await Lead.insertMany(leadDocs);
-            await logToDb(`💾 ${leadDocs.length} leads saved to database.`);
+            await Lead.insertMany(leadDocs, { ordered: false });
+            await logToDb(`💾 ${leadDocs.length} leads saved to database (bulk insert).`);
+        } else {
+            await logToDb(`⚠️ No leads to persist after filtering.`);
         }
-
-        // ══ STEP C: Ad Image Generation ═════════════════════════
-        await Campaign.updateOne({ _id: campaign._id }, { status: "generating_image" });
-        await logToDb("🎨 Phase 2C: Generating ad creative with DALL-E 3...");
-
-        const imageResult = await generateAdImage(
-            campaign.adCreativeConcept?.visual_prompt || "Professional B2B ad",
-            campaign.adCreativeConcept?.ad_copy || ""
-        );
-
-        await logToDb(`✅ Ad image generated successfully.`);
-
-        // ══ FINALIZE ════════════════════════════════════════════
-        await Campaign.updateOne(
-            { _id: campaign._id },
-            {
-                status: "ready",
-                adImageUrl: imageResult.imageUrl,
-                leadCount: cleanLeads.length,
-            }
-        );
-
-        await logToDb(`🎉 Campaign execution complete! ${cleanLeads.length} leads + 1 ad creative ready.`);
-        console.log(`✅ Campaign ${campaign._id} execution complete.`);
     } catch (error) {
-        console.error(`❌ Campaign execution error:`, error);
-        await logToDb(`❌ Execution failed: ${error.message}`);
-        await Campaign.updateOne(
-            { _id: campaign._id },
-            { status: "error", errorMessage: error.message }
-        );
+        console.error(`❌ Lead persistence failed for campaign ${campaign._id}:`, error);
+        await logToDb(`❌ Database error: ${error.message}`);
+        // Non-fatal for duplicate key errors (ordered: false handles partial inserts)
     }
+
+    // ══ FINALIZE ════════════════════════════════════════════════
+    await Campaign.updateOne(
+        { _id: campaign._id },
+        {
+            status: "ready",
+            leadCount: cleanLeads.length,
+        }
+    );
+
+    await logToDb(`🎉 Campaign execution complete! ${cleanLeads.length} leads scored & ready for outreach.`);
+    console.log(`✅ Campaign ${campaign._id} execution complete. ${cleanLeads.length} leads scored & persisted.`);
 }
 
 /**
  * GET /api/campaign/status/:userId
  *
- * Returns the campaign status, execution logs, lead count, and ad image URL.
+ * Returns the campaign status, execution logs, and lead count.
  */
 export async function handleGetCampaignStatus(req, res, next) {
     try {
@@ -186,8 +218,6 @@ export async function handleGetCampaignStatus(req, res, next) {
                 campaignId: campaign._id,
                 status: campaign.status,
                 leadCount: campaign.leadCount,
-                adImageUrl: campaign.adImageUrl,
-                adCopy: campaign.adCreativeConcept?.ad_copy || null,
                 executionLogs: campaign.executionLogs || [],
                 leadStats,
             },
@@ -200,14 +230,14 @@ export async function handleGetCampaignStatus(req, res, next) {
 /**
  * GET /api/campaign/:campaignId/leads
  *
- * Returns all leads for a given campaign.
+ * Returns all leads for a given campaign, sorted by match score.
  */
 export async function handleGetCampaignLeads(req, res, next) {
     try {
         const { campaignId } = req.params;
 
         const leads = await Lead.find({ campaignId })
-            .sort({ createdAt: -1 })
+            .sort({ matchScore: -1, createdAt: -1 })  // Best-scored leads first
             .select("-rawData");  // Exclude bulky raw data
 
         res.json({

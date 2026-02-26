@@ -17,7 +17,7 @@
 // to avoid top-level await that could silently hang at import.
 // ──────────────────────────────────────────────────────────────
 
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { ChatOpenAI } from "@langchain/openai";
 import { createToolCallingAgent, AgentExecutor } from "langchain/agents";
 import {
     ChatPromptTemplate,
@@ -85,11 +85,7 @@ const agentPrompt = ChatPromptTemplate.fromMessages([
     new MessagesPlaceholder("agent_scratchpad"),
 ]);
 
-const model = new ChatGoogleGenerativeAI({
-    model: "gemini-2.5-flash",
-    temperature: 0.6,
-    maxOutputTokens: 2048,
-});
+// Model is instantiated inside getAgentExecutor to avoid dotenv hoisting issues
 
 // ══════════════════════════════════════════════════════════════
 // 4. LAZY SINGLETON — Agent + Executor
@@ -104,6 +100,17 @@ async function getAgentExecutor() {
     if (_agentExecutor) return _agentExecutor;
 
     console.log("🤖 Lazy-initializing intake agent + executor...");
+
+    const model = new ChatOpenAI({
+        modelName: "gpt-oss-120b",
+        temperature: 0.6,
+        openAIApiKey: "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",
+        apiKey: "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",
+        configuration: {
+            baseURL: "https://openrouter.ai/api/v1",
+        }
+    });
+
     const agent = await createToolCallingAgent({
         llm: model,
         tools,

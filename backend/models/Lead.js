@@ -55,6 +55,14 @@ const leadSchema = new mongoose.Schema(
             default: null,
         },
 
+        // AI relevance score (0-100) from the scoring engine
+        matchScore: {
+            type: Number,
+            default: 0,
+            min: 0,
+            max: 100,
+        },
+
         // Outreach pipeline status
         outreachStatus: {
             type: String,
@@ -89,8 +97,9 @@ const leadSchema = new mongoose.Schema(
     }
 );
 
-// Compound index for efficient campaign + status queries
+// Compound indexes for efficient queries
 leadSchema.index({ campaignId: 1, outreachStatus: 1 });
+leadSchema.index({ campaignId: 1, matchScore: -1 });  // For sorting by score
 
 const Lead = mongoose.model("Lead", leadSchema);
 
